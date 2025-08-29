@@ -95,7 +95,7 @@
     "@context":"https://schema.org",
     "@type":"Calculator",
     "name":"Kira Artış Hesaplayıcı (TÜFE)",
-    "description":"Mevcut kira tutarı için, TÜFE (yıllık %) oranına göre zamlı kira hesaplama.",
+    "description":"Mevcut kira tutarı için, TÜFE (12 Aylık Ortalama %) oranına göre zamlı kira hesaplama.",
     "provider":{"@type":"Organization","name":"eylmz"}
   }
   </script>
@@ -104,7 +104,7 @@
   <main class="wrap">
     <section class="card">
       <h1>Kira Artış (TÜFE) Hesaplayıcı</h1>
-      <p class="sub">Mevcut kirayı girin, <strong>son açıklanan TÜFE (yıllık %)</strong> ile yeni kira tutarını görün.</p>
+      <p class="sub">Mevcut kirayı girin, <strong>son açıklanan TÜFE (12 Aylık Ortalama %)</strong> ile yeni kira tutarını görün.</p>
 
       <div class="grid cols-2" role="form" aria-label="Kira artış formu">
         <div>
@@ -113,7 +113,7 @@
         </div>
 
         <div>
-          <label for="rate">Artış Oranı (%) <span class="meta"></span></label>
+          <label for="rate">Artış Oranı (TÜFE 12 Ay Ort. %) <span class="meta"></span></label>
           <!-- ▼ Buton ve extra row kaldırıldı; iki input aynı hizada -->
           <input id="rate" class="in" type="number" inputmode="decimal" step="0.01" placeholder="Örn: 2.06" />
         </div>
@@ -170,8 +170,15 @@
 
         if (chosen != null) {
           rate.value = Number(chosen).toFixed(2);
+
+          // >>> ekle: hangi metriğin kullanıldığını yaz
+          const metricLabel =
+            typeof j.avg12_pct === 'number' ? 'TÜFE (12 ay ort.)' :
+            typeof j.yoy_pct   === 'number' ? 'TÜFE (yıllık)' :
+            'TÜFE (aylık)';
+
           stamp.style.display='inline-flex';
-          stamp.textContent = `Son veri: ${j.period} • TÜFE (12 ay ort.)`;
+          stamp.textContent = `Son veri: ${j.period} • ${metricLabel}`;
           src.textContent = j.source || 'TÜİK/TCMB';
           return;
         }
