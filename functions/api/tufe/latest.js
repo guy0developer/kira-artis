@@ -45,22 +45,23 @@ async function fetchFromTCMB() {
   if (!r.ok) return null;
   const html = await r.text();
 
-  // 07-2025 / 33,52 / 2,06 gibi tabloyu yakalamaya çalış
-  let m =
-    html.match(/(\d{2}-\d{4})\s*<\/td>\s*<td[^>]*>\s*([\d.,-]+)\s*<\/td>\s*<td[^>]*>\s*([\d.,-]+)\s*<\/td>/i) ||
-    html.match(/(\d{2}-\d{4})[\s\S]*?(\d{1,3}[.,]\d{1,2})[\s\S]*?(\d{1,3}[.,]\d{1,2})/i);
+  // İlk veri satırını ve aynı satırdaki üç sayıyı yakala (y/y, aylık, 12ay ort)
+  // Not: TCMB tablosu <td>MM-YYYY</td> ardından 3 <td> oran içerir.
+  const row = html.match(/(\d{2}-\d{4})\s*<\/td>([\s\S]*?)<\/tr>/i);
+  if (!row) return null;
+  const period = row[1];
+  const nums = Array.from(row[2].matchAll(/<td[^>]*>\s*([0-9.,-]+)\s*<\/td>/gi)).map(m => m[1]);
+  if (nums.length < 3) return null;
 
-  if (!m) return null;
-  const period = m[1];
-  const yoy = toNumber(m[2]);
-  const monthly = toNumber(m[3]);
-  if (monthly == null) return null;
+  const [yoy, monthly, avg12] = nums.map(toNumber);
+  if (avg12 == null) return null;
 
   return {
     period,
-    monthly_pct: monthly,
-    ...(yoy != null ? { yoy_pct: yoy } : {}),
-    source: "TCMB Tüketici Fiyatları"
+    monthly_pct: monthly ?? null,
+    yoy_pct: yoy ?? null,
+    avg12_pct: avg12,
+    source: "TCMB / Tüketici Fiyatları (12 aylık ort.)"
   };
 }
 
@@ -70,18 +71,23 @@ async function fetchFromDBnomics() {
   if (!r.ok) return null;
   const j = await r.json();
 
-  let period, value;
+  let period, monthly;
   const d = j?.series?.docs?.[0];
   if (d?.period?.length && d?.value?.length) {
     period = String(d.period.at(-1));
-    value = toNumber(d.value.at(-1));
+    monthly = toNumber(d.value.at(-1));
   } else if (Array.isArray(j?.series?.period) && Array.isArray(j?.series?.value)) {
     period = String(j.series.period.at(-1));
-    value = toNumber(j.series.value.at(-1));
+    monthly = toNumber(j.series.value.at(-1));
   }
-  if (value == null) return null;
 
-  return { period, monthly_pct: value, source: "OECD / DBnomics (CPALTT01.TUR.GP.M)" };
+  return (monthly==null) ? null : {
+    period,
+    monthly_pct: monthly,
+    yoy_pct: null,
+    avg12_pct: null, // DBnomics bu uçta yok; UI'da manuel girilebilir
+    source: "OECD / DBnomics (monthly)"
+  };
 }
 
 function toNumber(x) {

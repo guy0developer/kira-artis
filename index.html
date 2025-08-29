@@ -95,7 +95,7 @@
     "@context":"https://schema.org",
     "@type":"Calculator",
     "name":"Kira Artış Hesaplayıcı (TÜFE)",
-    "description":"Mevcut kira tutarı için, TÜFE (aylık %) oranına göre zamlı kira hesaplama.",
+    "description":"Mevcut kira tutarı için, TÜFE (yıllık %) oranına göre zamlı kira hesaplama.",
     "provider":{"@type":"Organization","name":"eylmz"}
   }
   </script>
@@ -104,7 +104,7 @@
   <main class="wrap">
     <section class="card">
       <h1>Kira Artış (TÜFE) Hesaplayıcı</h1>
-      <p class="sub">Mevcut kirayı girin, <strong>son açıklanan TÜFE (aylık %)</strong> ile yeni kira tutarını görün.</p>
+      <p class="sub">Mevcut kirayı girin, <strong>son açıklanan TÜFE (yıllık %)</strong> ile yeni kira tutarını görün.</p>
 
       <div class="grid cols-2" role="form" aria-label="Kira artış formu">
         <div>
@@ -160,12 +160,19 @@
       try {
         const r = await fetch('/api/tufe/latest', { headers: { 'Accept':'application/json' }, cache:'no-store' });
         if (!r.ok) throw new Error('bad');
-        const j = await r.json(); // {period, monthly_pct, ...}
-        if (typeof j.monthly_pct === 'number') {
-          rate.value = j.monthly_pct.toFixed(2);
+        const j = await r.json(); // {period, avg12_pct, monthly_pct, yoy_pct, ...}
+
+        // Öncelik: 12 ay ortalama; yoksa (fallback) yıllık; o da yoksa aylık
+        const chosen =
+          typeof j.avg12_pct === 'number' ? j.avg12_pct :
+          typeof j.yoy_pct   === 'number' ? j.yoy_pct   :
+          typeof j.monthly_pct === 'number' ? j.monthly_pct : null;
+
+        if (chosen != null) {
+          rate.value = Number(chosen).toFixed(2);
           stamp.style.display='inline-flex';
-          stamp.textContent = `Son veri: ${j.period} • TÜFE (aylık)`;
-          src.textContent = j.source || 'TCMB';
+          stamp.textContent = `Son veri: ${j.period} • TÜFE (12 ay ort.)`;
+          src.textContent = j.source || 'TÜİK/TCMB';
           return;
         }
         throw new Error('empty');
