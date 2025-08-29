@@ -34,12 +34,20 @@
     }
     *{box-sizing:border-box}
     html,body{height:100%}
+    /* ▼ Mobilde yukarıdaki boşluğu kaldır, desktop'ta ortala */
     body{
       margin:0; background:linear-gradient(180deg,var(--bg),#0e0f13);
       font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial;
       color:var(--text);
-      display:grid; place-items:center; padding:24px;
+      min-height:100svh; /* mobil tarayıcı çubuklarına duyarlı */
+      display:flex; align-items:center; justify-content:center;
+      padding:24px;
     }
+    @media (max-width: 719px){
+      body{ align-items:flex-start; padding:16px 16px 24px; }
+      .card{ margin-top:8px; }
+    }
+
     .wrap{width:min(760px,100%); margin-inline:auto}
     .card{
       background:var(--card); border:1px solid rgba(255,255,255,.06);
@@ -77,11 +85,7 @@
     .warn{color:var(--warn)}
     .err{color:var(--err)}
     footer{margin-top:14px; text-align:center; color:var(--muted); font-size:13px}
-    .spin{width:16px;height:16px;border-radius:50%;border:2px solid rgba(255,255,255,.25);border-top-color:var(--brand);animation:sp .8s linear infinite}
-    @keyframes sp{to{transform:rotate(1turn)}}
     .copy{font-size:13px; cursor:pointer; color:var(--brand); border:0; background:transparent}
-    .tip{font-size:13px; color:var(--muted)}
-    .sr{position:absolute;left:-9999px}
     .source{font-size:12px; color:var(--muted)}
   </style>
 
@@ -100,7 +104,7 @@
   <main class="wrap">
     <section class="card">
       <h1>Kira Artış (TÜFE) Hesaplayıcı</h1>
-      <p class="sub">Mevcut kirayı girin, <strong>son açıklanan TÜFE (aylık %)</strong> ile yeni kira tutarını görün. Veri: TCMB/ TÜİK yayımı.</p>
+      <p class="sub">Mevcut kirayı girin, <strong>son açıklanan TÜFE (aylık %)</strong> ile yeni kira tutarını görün.</p>
 
       <div class="grid cols-2" role="form" aria-label="Kira artış formu">
         <div>
@@ -109,16 +113,9 @@
         </div>
 
         <div>
-          <label for="rate">Artış Oranı (%) <span class="meta">(otomatik ya da manuel)</span></label>
-          <div class="row">
-            <input id="rate" class="in" type="number" inputmode="decimal" step="0.01" placeholder="Örn: 2.06"
-                   aria-describedby="rateTip" />
-            <button id="fetch" class="btn" title="Son TÜFE (aylık %) değerini getir">
-              <span id="fetchTxt">Oranı Getir</span>
-              <span id="spin" class="spin" style="display:none"></span>
-            </button>
-          </div>
-          <div id="rateTip" class="tip">“Oranı Getir” çalışmazsa değeri buraya <b>manuel</b> yazabilirsiniz.</div>
+          <label for="rate">Artış Oranı (%) <span class="meta"></span></label>
+          <!-- ▼ Buton ve extra row kaldırıldı; iki input aynı hizada -->
+          <input id="rate" class="in" type="number" inputmode="decimal" step="0.01" placeholder="Örn: 2.06" />
         </div>
       </div>
 
@@ -155,26 +152,35 @@
 
     const el = (id)=>document.getElementById(id);
     const rent = el('rent'), rate = el('rate');
-    const btnFetch = el('fetch'), spin = el('spin'), fetchTxt = el('fetchTxt');
     const btnCalc = el('calc'), btnReset = el('reset'), stamp = el('stamp');
     const result = el('result'), newRent = el('newRent'), inc = el('inc'), rateShow = el('rateShow');
     const copyBtn = el('copy'), src = el('src');
 
-    // Endpoint tercih sırası: 1) /api/tufe/latest (Cloudflare Function) 2) TCMB sayfasını istemci tarafı parse (CORS engeli olabilir) 3) Kullanıcı manuel girer
     async function getLatestTufeMonthly() {
-      const r = await fetch('/api/tufe/latest', { headers: { 'Accept':'application/json' }});
-      const j = await r.json(); // {period, monthly_pct, ...}
-      rate.value = (j.monthly_pct ?? '').toFixed(2);
-      stamp.style.display='inline-flex';
-      stamp.textContent = `Son veri: ${j.period} • TÜFE (aylık)`;
-      src.textContent = j.source || 'TCMB';
+      try {
+        const r = await fetch('/api/tufe/latest', { headers: { 'Accept':'application/json' }, cache:'no-store' });
+        if (!r.ok) throw new Error('bad');
+        const j = await r.json(); // {period, monthly_pct, ...}
+        if (typeof j.monthly_pct === 'number') {
+          rate.value = j.monthly_pct.toFixed(2);
+          stamp.style.display='inline-flex';
+          stamp.textContent = `Son veri: ${j.period} • TÜFE (aylık)`;
+          src.textContent = j.source || 'TCMB';
+          return;
+        }
+        throw new Error('empty');
+      } catch (e) {
+        stamp.style.display='inline-flex';
+        stamp.textContent = 'Oran otomatik çekilemedi • Manuel girebilirsiniz';
+        src.textContent = '—';
+      }
     }
 
     function calculate() {
       const r = parseFloat((rent.value||'').toString().replace(',', '.'));
       const p = parseFloat((rate.value||'').toString().replace(',', '.'));
       if (Number.isNaN(r) || r <= 0) { alert('Lütfen geçerli bir kira tutarı girin.'); return; }
-      if (Number.isNaN(p)) { alert('Oran boş. “Oranı Getir”e basabilir veya manuel girebilirsiniz.'); return; }
+      if (Number.isNaN(p)) { alert('Oran boş. Lütfen manuel girin ya da daha sonra tekrar deneyin.'); return; }
       const incAmt = r * (p/100);
       const newAmt = r + incAmt;
       result.style.display='block';
@@ -189,9 +195,6 @@
       src.textContent='—';
     }
 
-    btnFetch.addEventListener('click', async () => {
-      await getLatestTufeMonthly().finally(()=>{ spin.style.display='none'; fetchTxt.textContent='Oranı Getir'; });
-    });
     btnCalc.addEventListener('click', calculate);
     btnReset.addEventListener('click', resetAll);
 
@@ -203,8 +206,8 @@
       }
     });
 
-    // Otomatik: sayfa açıldığında oranı dene (sessiz)
-    getLatestTufeMonthly().finally(()=>{ spin.style.display='none'; fetchTxt.textContent='Oranı Getir'; });
+    // Sayfa açılınca oranı otomatik al
+    getLatestTufeMonthly();
   </script>
 </body>
 </html>
