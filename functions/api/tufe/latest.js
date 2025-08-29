@@ -1,133 +1,172 @@
 // functions/api/tufe/latest.js
-// Ücretsiz kaynak: OECD SDMX-JSON (key yok).
-// Çıktı: { period, monthly_pct, yoy_pct, avg12_pct, source }
-// Hesap: avg12_pct = (son12EndeksOrt / önceki12EndeksOrt - 1) * 100
+// Kaynak: OECD stats.sdmx (PRICES_CPI) — ÜCRETSİZ
+// Seriler:
+//  - TUR.CPALTT01.IXOB.M  -> Endeks (2015=100)  → 12 Aylık Ortalama (%) buradan hesaplanır
+//  - TUR.CPALTT01.GY.M    -> Yıllık % (y/y)
+//  - TUR.CPALTT01.GP.M    -> Aylık % (m/m)
+// Yanıt: { period: "MM-YYYY", avg12_pct, yoy_pct, monthly_pct, source }
 
 export async function onRequestGet({ request, waitUntil }) {
   const url = new URL(request.url);
   const debug = url.searchParams.get("debug") === "1";
   const logs = [];
-  const log = (m) => { if (debug) logs.push(String(m)); };
 
   const cache = caches.default;
-  const cacheKey = new Request(url.origin + "/__tufe_latest_v3");
-  const cached = await cache.match(cacheKey);
-  if (cached && !debug) return cached;
+  const cacheKey = new Request(url.origin + "/__tufe_latest_prices_cpi_v1");
+  if (!debug) {
+    const hit = await cache.match(cacheKey);
+    if (hit) return hit;
+  }
 
   try {
-    // 1) OECD SDMX-JSON: MEI_CPI / Türkiye / CPALTT01 / GP (monthly change) / M (monthly)
-    // Eski uç hala çalışıyor ve CORS açık:
-    const GP_URL = "https://stats.oecd.org/SDMX-JSON/data/MEI_CPI/TUR.CPALTT01.GP.M.A";
-    const gp = await fetchSdmxSeries(GP_URL, log); // [{ period:"YYYY-MM", value:number }, ...] kronolojik
-    if (!gp || gp.length === 0) throw new Error("oecd_gp_empty");
+    // 1) Endeks (IXOB) → 12 ay ort. hesapla
+    const ix = await fetchOECD_CSV("TUR.CPALTT01.IXOB.M", logs); // [{period:"YYYY-MM", value}]
+    if (!ix.length) throw new Error("ixob_empty");
+    const last = ix[ix.length - 1].period;
 
-    // Aylık son değer (UI’da gösterim için)
-    const last = gp[gp.length - 1];
-    const monthly_pct = toNum(last.value);
-
-    // GP’den endeks kur (100 baz) ve 12ay ort. yıllık artışı hesapla
-    // İhtiyacımız: en az 24 gözlem (son 24 ay). Yoksa hesap yapılamaz.
-    if (gp.length < 24) throw new Error("not_enough_obs_for_avg12");
-    const idx = buildIndexFromMonthlyGP(gp); // [{period, index}] kronolojik
-
-    const n = idx.length;
-    const cur12 = mean(idx.slice(n - 12).map(d => d.index));
-    const prev12 = mean(idx.slice(n - 24, n - 12).map(d => d.index));
+    if (ix.length < 24) throw new Error("ixob_not_enough_data");
+    const idxVals = ix.map(r => r.value).filter(Number.isFinite);
+    const cur12 = mean(idxVals.slice(-12));
+    const prev12 = mean(idxVals.slice(-24, -12));
+    if (!isFinite(cur12) || !isFinite(prev12) || prev12 === 0) throw new Error("ixob_avg12_fail");
     const avg12_pct = (cur12 / prev12 - 1) * 100;
 
-    // 2) İsteğe bağlı: Y/Y (GY) serisi – bulamazsak sorun değil
-    let yoy_pct = null;
+    // 2) Yıllık (GY) ve Aylık (GP) — bulunamazsa null bırak
+    let yoy_pct = null, monthly_pct = null;
+
     try {
-      const GY_URL = "https://stats.oecd.org/SDMX-JSON/data/MEI_CPI/TUR.CPALTT01.GY.M.A";
-      const gy = await fetchSdmxSeries(GY_URL, log);
-      if (gy && gy.length) {
-        const gyMap = new Map(gy.map(d => [d.period, toNum(d.value)]));
-        if (gyMap.has(last.period)) yoy_pct = gyMap.get(last.period);
-        else yoy_pct = gy[gy.length - 1].value; // aynı aya denk gelmezse son gözlem
+      const gy = await fetchOECD_CSV("TUR.CPALTT01.GY.M", logs);
+      if (gy.length) {
+        const m = new Map(gy.map(r => [r.period, r.value]));
+        yoy_pct = m.has(last) ? m.get(last) : gy[gy.length - 1].value;
       }
-    } catch (e) { log("oecd_gy_fail:" + e.message); }
+    } catch (e) { logs.push("GY_fail:" + e.message); }
+
+    try {
+      const gp = await fetchOECD_CSV("TUR.CPALTT01.GP.M", logs);
+      if (gp.length) {
+        const m = new Map(gp.map(r => [r.period, r.value]));
+        monthly_pct = m.has(last) ? m.get(last) : gp[gp.length - 1].value;
+      }
+    } catch (e) { logs.push("GP_fail:" + e.message); }
 
     const body = {
-      period: last.period,          // "YYYY-MM"
-      monthly_pct: round2(monthly_pct),
-      yoy_pct: yoy_pct != null ? round2(yoy_pct) : null,
+      period: toMMYYYY(last),                  // "MM-YYYY"
       avg12_pct: round2(avg12_pct),
-      source: "OECD MEI_CPI (SDMX-JSON)"
+      ...(yoy_pct != null ? { yoy_pct: round2(yoy_pct) } : {}),
+      ...(monthly_pct != null ? { monthly_pct: round2(monthly_pct) } : {}),
+      source: "OECD / PRICES_CPI (CPALTT01.*.M)"
     };
 
-    const res = json(body, 200, debug ? { __debug: { logs } } : undefined);
-    // 6 saat edge cache
-    waitUntil(cache.put(cacheKey, res.clone()));
+    const res = json(debug ? { ...body, __debug: { logs } } : body);
+    if (!debug) waitUntil(cache.put(cacheKey, res.clone()));
     return res;
 
   } catch (e) {
-    // Fallback eklemek istersen: Buraya DBnomics MEI GP/GY denemesi koyabilirsin.
-    // Şimdilik tek kaynak OECD (ücretsiz ve yeterli).
-    const res = json({ error: "unavailable" }, 502, debug ? { __debug: { logs: logs.concat(String(e)) } } : undefined);
-    return res;
+    logs.push("fatal:" + String(e.message || e));
+    return json(debug ? { error: "unavailable", __debug: { logs } } : { error: "unavailable" }, 502);
   }
 }
 
-// ---------- Helpers ----------
+// ----- OECD CSV fetch & parse -----
 
-function json(body, status = 200, extra) {
-  const payload = extra ? { ...body, ...extra } : body;
-  return new Response(JSON.stringify(payload), {
+async function fetchOECD_CSV(key, logs) {
+  // PRICES_CPI veri kümesi. CSV, TIME/TIME_PERIOD ve Value/OBS_VALUE sütunlarıyla gelir.
+  // Örnek: https://stats.oecd.org/SDMX-JSON/data/PRICES_CPI/TUR.CPALTT01.GY.M/all?contentType=csv
+  const u = `https://stats.oecd.org/SDMX-JSON/data/PRICES_CPI/${key}/all?contentType=csv`;
+  const r = await fetch(u, {
+    headers: { "Accept": "text/csv, */*;q=0.1" },
+    cf: { cacheTtl: 21600, cacheEverything: true }
+  });
+  if (!r.ok) { logs.push(`http_${key}_${r.status}`); throw new Error(`http_${key}_${r.status}`); }
+
+  const csv = await r.text();
+  const rows = parseCSV(csv);
+  if (!rows.length) { logs.push(`csv_empty_${key}`); return []; }
+
+  // Sütun adlarını yakala (farklı varyantlar olabilir)
+  const timeCol = pickCol(rows[0], ["TIME", "TIME_PERIOD", "Time", "TIME_PERIOD_LABEL"]);
+  const valCol  = pickCol(rows[0], ["Value", "OBS_VALUE", "value"]);
+  if (!timeCol || !valCol) { logs.push(`csv_cols_missing_${key}`); return []; }
+
+  // İlk satır başlık olduğundan, 2. satırdan itibaren oku
+  const out = [];
+  for (let i = 1; i < rows.length; i++) {
+    const t = rows[i][timeCol];
+    const v = toNum(rows[i][valCol]);
+    if (t && Number.isFinite(v)) out.push({ period: normYYYYMM(t), value: v });
+  }
+  // kronolojik sırala
+  out.sort((a, b) => a.period.localeCompare(b.period));
+  return out;
+}
+
+function parseCSV(text) {
+  const lines = text.trim().split(/\r?\n/);
+  if (lines.length === 0) return [];
+  const rows = [];
+  const headers = splitCsvLine(lines[0]);
+
+  rows.push(Object.fromEntries(headers.map((h, i) => [h, h]))); // header as first row (for col picking)
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = splitCsvLine(lines[i]);
+    const obj = {};
+    headers.forEach((h, idx) => { obj[h] = cols[idx] ?? ""; });
+    rows.push(obj);
+  }
+  return rows;
+}
+
+function splitCsvLine(line) {
+  const out = [];
+  let cur = "", inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQ && line[i + 1] === '"') { cur += '"'; i++; }
+      else inQ = !inQ;
+    } else if (ch === "," && !inQ) {
+      out.push(cur); cur = "";
+    } else {
+      cur += ch;
+    }
+  }
+  out.push(cur);
+  return out.map(s => s.trim());
+}
+
+function pickCol(headerRow, candidates) {
+  const keys = Object.keys(headerRow);
+  for (const c of candidates) {
+    const k = keys.find(x => x.toLowerCase() === c.toLowerCase());
+    if (k) return k;
+  }
+  return null;
+}
+
+// ----- utils -----
+const toNum   = (x) => { const n = Number(String(x ?? "").replace(",", ".").trim()); return Number.isFinite(n) ? n : NaN; };
+const mean    = (a) => a.reduce((s, v) => s + v, 0) / a.length;
+const round2  = (n) => Math.round(n * 100) / 100;
+const toMMYYYY = (p) => {
+  const m = String(p).match(/^(\d{4})-(\d{2})$/);
+  return m ? `${m[2]}-${m[1]}` : String(p);
+};
+const normYYYYMM = (t) => {
+  // Kabul et: "YYYY-MM", "YYYY-M", "YYYY/MM", "YYYYMM"
+  const m = String(t).match(/^(\d{4})[-/]?(\d{1,2})$/) || String(t).match(/^(\d{4})(\d{2})$/);
+  if (m) return `${m[1]}-${String(m[2]).padStart(2, "0")}`;
+  return String(t);
+};
+
+function json(body, status = 200) {
+  return new Response(JSON.stringify(body), {
     status,
     headers: {
       "content-type": "application/json; charset=utf-8",
-      "cache-control": "public, max-age=21600",
-      "access-control-allow-origin": "*"
+      "access-control-allow-origin": "*",
+      "cache-control": "public, max-age=21600"
     }
   });
 }
-
-// OECD SDMX-JSON parser (stats.oecd.org/SDMX-JSON/*)
-// Dönen şema: dataSets[0].series["0:0:0:0"].observations -> { "0":[val], "1":[val], ... }
-// Zaman etiketleri: structure.dimensions.observation[0].values -> [{id:"YYYY-MM"}, ...]
-async function fetchSdmxSeries(u, log) {
-  const r = await fetch(u, { headers: { Accept: "application/json" }, cf: { cacheTtl: 21600, cacheEverything: true } });
-  if (!r.ok) { log(`oecd_http_${r.status}`); throw new Error("oecd_http_" + r.status); }
-  const j = await r.json();
-
-  const ds = j?.dataSets?.[0];
-  const obsDim = j?.structure?.dimensions?.observation?.[0];
-  const seriesObj = ds?.series;
-  const seriesKey = seriesObj && Object.keys(seriesObj)[0];
-  if (!ds || !obsDim || !seriesKey) { log("oecd_parse_head_fail"); throw new Error("oecd_parse_head_fail"); }
-
-  const obs = seriesObj[seriesKey]?.observations || {};
-  const times = obsDim.values?.map(v => v.id) || [];
-  const out = [];
-  for (const k in obs) {
-    const i = Number(k);
-    if (Number.isInteger(i) && times[i] != null) {
-      const v = obs[k]?.[0];
-      if (v != null) out.push({ period: times[i], value: Number(v) });
-    }
-  }
-  // Garantili kronoloji
-  out.sort((a, b) => (a.period < b.period ? -1 : 1));
-  return out;
-}
-
-function buildIndexFromMonthlyGP(series) {
-  // series: [{period:"YYYY-MM", value: gpPct}]
-  let level = 100; // baz
-  const out = [];
-  for (const d of series) {
-    const gp = toNum(d.value);
-    if (gp == null) continue;
-    level = level * (1 + gp / 100);
-    out.push({ period: d.period, index: level });
-  }
-  return out;
-}
-
-const toNum = (x) => {
-  if (x == null) return null;
-  const n = Number(String(x).replace(",", ".").trim());
-  return Number.isFinite(n) ? n : null;
-};
-const mean = (arr) => arr.reduce((a, b) => a + b, 0) / arr.length;
-const round2 = (x) => (x == null ? null : Math.round(x * 100) / 100);
